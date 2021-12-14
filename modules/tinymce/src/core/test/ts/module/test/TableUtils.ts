@@ -1,7 +1,7 @@
 import { ApproxStructure, Assertions, Cursors, Mouse, StructAssert, UiFinder, Waiter } from '@ephox/agar';
-import { Arr, Obj } from '@ephox/katamari';
-import { Attribute, Checked, Class, SelectorFind, SugarBody, Value } from '@ephox/sugar';
-import { TinyDom, TinyUiActions } from '@ephox/wrap-mcagar';
+import { Arr } from '@ephox/katamari';
+import { Attribute, Html, SelectorFilter, SelectorFind, SugarElement } from '@ephox/sugar';
+import { TinyAssertions, TinyContentActions, TinyDom, TinySelections, TinyUiActions } from '@ephox/wrap-mcagar';
 import { assert } from 'chai';
 
 import Editor from 'tinymce/core/api/Editor';
@@ -17,12 +17,6 @@ export interface WidthData {
   readonly unit: string | null;
   readonly isPercent: boolean;
 }
-
-const advSelectors = {
-  borderstyle: 'label.tox-label:contains(Border style) + div.tox-listboxfield > .tox-listbox',
-  bordercolor: 'label.tox-label:contains(Border color) + div>input.tox-textfield',
-  backgroundcolor: 'label.tox-label:contains(Background color) + div>input.tox-textfield'
-};
 
 const getRawWidth = (editor: Editor, elm: HTMLElement): string => {
   const style = editor.dom.getStyle(elm, 'width');
@@ -69,13 +63,6 @@ const openContextToolbarOn = (editor: Editor, selector: string, path: number[]):
   Mouse.click(target);
 };
 
-const pOpenTableDialog = async (editor: Editor): Promise<void> => {
-  await Waiter.pTryUntil('Click table properties toolbar button',
-    () => TinyUiActions.clickOnToolbar(editor, 'button:not(.tox-tbtn--disabled)')
-  );
-  await TinyUiActions.pWaitForDialog(editor);
-};
-
 const assertApproxElementStructure = (editor: Editor, selector: string, expected: StructAssert): void => {
   const body = editor.getBody();
   body.normalize(); // consolidate text nodes
@@ -90,15 +77,6 @@ const assertApproxElementStructure = (editor: Editor, selector: string, expected
 
 const assertElementStructure = (editor: Editor, selector: string, expected: string): void =>
   assertApproxElementStructure(editor, selector, ApproxStructure.fromHtml(expected));
-
-const pClickDialogButton = async (editor: Editor, isSave: boolean): Promise<void> => {
-  const close = isSave ? TinyUiActions.submitDialog : TinyUiActions.cancelDialog;
-  close(editor);
-  await Waiter.pTryUntil(
-    'Waiting for the dialog to go away',
-    () => UiFinder.notExists(SugarBody.body(), '.tox-dialog')
-  );
-};
 
 const pAssertDialogPresence = async (label: string, editor: Editor, expected: Record<string, number>): Promise<void> => {
   const dialog = await TinyUiActions.pWaitForDialog(editor);
@@ -116,70 +94,98 @@ const pAssertListBoxValue = async (label: string, editor: Editor, section: strin
   assert.equal(value, expected, 'Checking listbox: ' + label);
 };
 
-const getInput = (selector: string) =>
-  UiFinder.findIn<HTMLInputElement>(SugarBody.body(), selector).getOrDie();
+const insertRaw = (editor: Editor, html: string): SugarElement<HTMLTableElement> => {
+  const element = SugarElement.fromHtml<HTMLTableElement>(html);
+  Attribute.set(element, 'data-mce-id', '__mce');
+  editor.insertContent(Html.getOuter(element));
 
-const assertInputValue = (label: string, selector: string, expected: string | boolean): void => {
-  const input = getInput(selector);
-  if (input.dom.type === 'checkbox') {
-    assert.equal(input.dom.checked, expected, `The input value for ${label} should be: ${expected}`);
-  } else if (Class.has(input, 'tox-listbox')) {
-    assert.equal(Attribute.get(input, 'data-value'), expected, `The input value for ${label} should be: ${expected}`);
-  } else {
-    assert.equal(Value.get(input), expected, `The input value for ${label} should be: ${expected}`);
-  }
+  return SelectorFind.descendant<HTMLTableElement>(TinyDom.body(editor), '[data-mce-id="__mce"]').map((el) => {
+    Attribute.remove(el, 'data-mce-id');
+    return el;
+  }).getOrDie();
 };
 
-const setInputValue = (selector: string, value: string | boolean): void => {
-  const input = getInput(selector);
-  if (input.dom.type === 'checkbox') {
-    Checked.set(input, value as boolean);
-  } else if (Class.has(input, 'tox-listbox')) {
-    Attribute.set(input, 'data-value', value);
-  } else {
-    Value.set(input, value as string);
-  }
+const mergeCells = (editor: Editor, keys: (editor: Editor) => void): boolean => {
+  keys(editor);
+  return editor.execCommand('mceTableMergeCells');
 };
 
-const gotoGeneralTab = () => Mouse.clickOn(SugarBody.body(), 'div.tox-tab:contains(General)');
-const gotoAdvancedTab = () => Mouse.clickOn(SugarBody.body(), 'div.tox-tab:contains(Advanced)');
+const splitCells = (editor: Editor): boolean =>
+  editor.execCommand('mceTableSplitCells');
 
-const setTabInputValues = (data: Record<string, any>, tabSelectors: Record<string, string>): void => {
-  Obj.mapToArray(tabSelectors, (value, key) => {
-    if (Obj.has(data, key)) {
-      setInputValue(tabSelectors[key], data[key]);
-    }
-  });
+const insertColumnBefore = (editor: Editor): boolean =>
+  editor.execCommand('mceTableInsertColBefore');
+
+const insertColumnAfter = (editor: Editor): boolean =>
+  editor.execCommand('mceTableInsertColAfter');
+
+const deleteColumn = (editor: Editor): boolean =>
+  editor.execCommand('mceTableDeleteCol');
+
+const insertRowBefore = (editor: Editor): boolean =>
+  editor.execCommand('mceTableInsertRowBefore');
+
+const insertRowAfter = (editor: Editor): boolean =>
+  editor.execCommand('mceTableInsertRowAfter');
+
+const deleteRow = (editor: Editor): boolean =>
+  editor.execCommand('mceTableDeleteRow');
+
+const pDragHandle = async (editor: Editor, id: string, dx: number, dy: number): Promise<void> => {
+  const body = TinyDom.body(editor);
+  const resizeHandle = await Waiter.pTryUntil('wait for resize handlers',
+    () => UiFinder.findIn(body, '#mceResizeHandle' + id).getOrDie()
+  );
+  Mouse.mouseDown(resizeHandle);
+  Mouse.mouseMoveTo(resizeHandle, dx, dy);
+  Mouse.mouseUp(resizeHandle);
 };
 
-const setDialogValues = (data: Record<string, any>, hasAdvanced: boolean, generalSelectors: Record<string, string>): void => {
-  if (hasAdvanced) {
-    gotoGeneralTab();
-    setTabInputValues(data, generalSelectors);
-    gotoAdvancedTab();
-    setTabInputValues(data, advSelectors);
-  } else {
-    setTabInputValues(data, generalSelectors);
-  }
+const pDragResizeBar = async (editor: Editor, rowOrCol: 'row' | 'column', index: number, dx: number, dy: number): Promise<void> => {
+  const body = TinyDom.body(editor);
+  const docElem = TinyDom.documentElement(editor);
+  // Need to mouse over the table to trigger the 'resizebar' divs to appear in the dom
+  const td = UiFinder.findIn(body, 'td').getOrDie();
+  Mouse.mouseOver(td);
+
+  // Wait for the resize bar to show
+  const resizeBar = await Waiter.pTryUntil('wait for resize bars',
+    () => UiFinder.findIn(docElem, `div[data-${rowOrCol}='${index}']`).getOrDie()
+  );
+  Mouse.mouseDown(resizeBar);
+
+  const blocker = UiFinder.findIn(docElem, 'div.ephox-dragster-blocker').getOrDie();
+  Mouse.mouseMove(blocker);
+  Mouse.mouseMoveTo(blocker, dx, dy);
+  Mouse.mouseUp(blocker);
 };
 
-const assertTabContents = (data: Record<string, any>, tabSelectors: Record<string, string>): void => {
-  Obj.mapToArray(tabSelectors, (value, key) => {
-    if (Obj.has(data, key)) {
-      assertInputValue(key, value, data[key]);
-    }
-  });
+// The critical part is the target element as this is what Darwin (MouseSelection.ts) uses to determine the fake selection
+const selectWithMouse = (start: SugarElement<Node>, end: SugarElement<Node>): void => {
+  Mouse.mouseDown(start, { button: 0 });
+  Mouse.mouseOver(end, { button: 0 });
+  Mouse.mouseUp(end, { button: 0 });
 };
 
-const assertDialogValues = (data: Record<string, any>, hasAdvanced: boolean, generalSelectors: Record<string, string>): void => {
-  if (hasAdvanced) {
-    gotoGeneralTab();
-    assertTabContents(data, generalSelectors);
-    gotoAdvancedTab();
-    assertTabContents(data, advSelectors);
-  } else {
-    assertTabContents(data, generalSelectors);
-  }
+// Set up to mock what the listeners are looking for in InputHandlers.ts - keyup()
+const selectWithKeyboard = (editor: Editor, cursorRange: Cursors.CursorPath, keyDirection: number): void => {
+  const { startPath, soffset, finishPath, foffset } = cursorRange;
+  TinySelections.setSelection(editor, startPath, soffset, finishPath, foffset);
+  TinyContentActions.keystroke(editor, keyDirection, { shiftKey: true });
+};
+
+const getSelectedCells = (editor: Editor): SugarElement<HTMLTableCellElement>[] =>
+  SelectorFilter.descendants(TinyDom.body(editor), 'td[data-mce-selected],th[data-mce-selected]');
+
+const assertSelectedCells = (editor: Editor, expectedSelectedCells: string[], mapper: (cell: SugarElement<HTMLTableCellElement>) => string): void => {
+  const selectedCells = Arr.map(getSelectedCells(editor), mapper);
+  assert.deepEqual(selectedCells, expectedSelectedCells);
+};
+
+const getCellWidth = (editor: Editor, table: SugarElement<HTMLTableElement>, rowNumber: number, columnNumber: number): WidthData => {
+  const row = SelectorFilter.descendants<HTMLTableRowElement>(table, 'tr')[rowNumber];
+  const cell = SelectorFilter.descendants<HTMLTableCellElement>(row, 'th,td')[columnNumber];
+  return getWidths(editor, cell.dom);
 };
 
 const assertTableStructureWithSizes = (
@@ -254,15 +260,19 @@ const assertTableStructureWithSizes = (
   }
 };
 
-const pInsertTableViaGrid = async (editor: Editor, cols: number, rows: number) => {
-  TinyUiActions.clickOnMenu(editor, 'span:contains("Table")');
-  await Waiter.pTryUntil('click table menu', () =>
-    TinyUiActions.clickOnUi(editor, 'div.tox-menu div.tox-collection__item .tox-collection__item-label:contains("Table")')
-  );
-  const gridSelector = (cols - 1) + (10 * (rows - 1));
-  await Waiter.pTryUntil('click table grid', () =>
-    TinyUiActions.clickOnUi(editor, `div.tox-insert-table-picker div[role="button"]:nth(${gridSelector})`)
-  );
+const insertTable = (editor: Editor, args: Record<string, any>): boolean =>
+  editor.execCommand('mceInsertTable', false, args);
+
+const makeInsertTable = (editor: Editor, columns: number, rows: number, args: Record<string, any> = {}): SugarElement<HTMLTableElement> => {
+  insertTable(editor, { rows, columns, ...args });
+  return SugarElement.fromDom(editor.dom.getParent(editor.selection.getStart(), 'table'));
+};
+
+const insertTableTest = (editor: Editor, tableColumns: number, tableRows: number, widths: number[][], withColGroups: boolean): void => {
+  editor.setContent('');
+  insertTable(editor, { rows: tableRows, columns: tableColumns });
+  assertTableStructureWithSizes(editor, tableColumns, tableRows, '%', 100, widths, withColGroups);
+  TinyAssertions.assertCursor(editor, [ 0, withColGroups ? 1 : 0, 0, 0 ], 0);
 };
 
 const createTableChildren = (s: ApproxStructure.StructApi, str: ApproxStructure.StringApi, withColGroups: boolean): StructAssert[] => {
@@ -325,22 +335,48 @@ const createTableChildren = (s: ApproxStructure.StructApi, str: ApproxStructure.
   return withColGroups ? [ columns, tbody ] : [ tbody ];
 };
 
+const assertWidths = (widths: { widthBefore: WidthData; widthAfter: WidthData }) => {
+  if (widths.widthBefore.isPercent) {
+    // due to rounding errors we can be off by one pixel for percentage tables
+    assert.approximately(
+      widths.widthAfter.px,
+      widths.widthBefore.px,
+      1,
+      `table width should be approx (within 1px): ${widths.widthBefore.raw}% (${widths.widthBefore.px}px) ~= ${widths.widthAfter.raw}% (${widths.widthAfter.px}px)`
+    );
+  } else {
+    assert.equal(widths.widthAfter, widths.widthBefore, 'table width should not change');
+  }
+};
+
 export {
+  getCellWidth,
   pAssertDialogPresence,
   pAssertListBoxValue,
   openContextToolbarOn,
   assertTableStructure,
   assertTableStructureWithSizes,
   createTableChildren,
-  pInsertTableViaGrid,
-  pOpenTableDialog,
-  gotoGeneralTab,
-  gotoAdvancedTab,
-  assertInputValue,
-  assertDialogValues,
-  setInputValue,
-  setDialogValues,
-  pClickDialogButton,
+  insertTableTest,
   assertElementStructure,
-  assertApproxElementStructure
+  assertApproxElementStructure,
+  insertRaw,
+  mergeCells,
+  splitCells,
+  pDragHandle,
+  pDragResizeBar,
+  selectWithKeyboard,
+  selectWithMouse,
+  getSelectedCells,
+  assertSelectedCells,
+  getWidths,
+  insertColumnBefore,
+  insertColumnAfter,
+  deleteColumn,
+  insertRowBefore,
+  insertRowAfter,
+  deleteRow,
+  insertTable,
+  makeInsertTable,
+  assertWidths
 };
