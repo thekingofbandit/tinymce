@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Changed
 - Upgraded to Katamari 9.0, which includes breaking changes to the `Optional` API used in this module.
 - `Remove.unwrap` API now inserts children after the current node, instead of before.
+- `Replication.mutate` API now inserts the replacement node after the current node, instead of before.
 
 ### Removed
 - Removed support for Microsoft Internet Explorer and legacy Microsoft Edge.
